@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature when --sample is enabled")
     parser.add_argument("--top-p", type=float, default=0.0, help="Top-p nucleus sampling cutoff when --sample is enabled. 0 disables it.")
     parser.add_argument("--sample", action="store_true", help="Sample tokens instead of greedy argmax when generating")
+    parser.add_argument("--no-state-cache", action="store_true", help="Disable recurrent state caching and recompute the full sequence at every generation step")
     return parser.parse_args()
 
 
@@ -196,22 +197,43 @@ def generate(
     temperature: float,
     top_p: float,
     topk: int,
+    use_state_cache: bool = True,
 ) -> dict[str, Any]:
+    if not prompt_tokens:
+        raise ValueError("prompt_tokens must not be empty")
+
     tokens = list(prompt_tokens)
     first_logits = None
 
     with torch.no_grad():
-        for step in range(max(1, max_new_tokens if max_new_tokens > 0 else 1)):
-            input_tensor = torch.tensor(tokens, dtype=torch.long, device=device).reshape(1, -1)
-            logits = model(input_tensor)[0, -1]
-            if first_logits is None:
-                first_logits = logits.detach().cpu()
+        if use_state_cache:
+            # Prefill the prompt once, then feed only the newly sampled token at
+            # each subsequent step. This avoids recomputing the entire history.
+            state = model.init_state(batch_size=1, device=device)
+            input_tensor = torch.tensor(prompt_tokens, dtype=torch.long, device=device).reshape(1, -1)
+            logits, state = model(input_tensor, state=state, return_state=True)
+            logits = logits[0, -1]
+            first_logits = logits.detach().cpu()
 
-            if max_new_tokens <= 0:
-                break
+            for step in range(max_new_tokens):
+                next_token = sample_token(logits, do_sample=do_sample, temperature=temperature, top_p=top_p)
+                tokens.append(next_token)
+                if step + 1 < max_new_tokens:
+                    input_tensor = torch.tensor([[next_token]], dtype=torch.long, device=device)
+                    logits, state = model(input_tensor, state=state, return_state=True)
+                    logits = logits[0, -1]
+        else:
+            for _ in range(max(1, max_new_tokens)):
+                input_tensor = torch.tensor(tokens, dtype=torch.long, device=device).reshape(1, -1)
+                logits = model(input_tensor)[0, -1]
+                if first_logits is None:
+                    first_logits = logits.detach().cpu()
 
-            next_token = sample_token(logits, do_sample=do_sample, temperature=temperature, top_p=top_p)
-            tokens.append(next_token)
+                if max_new_tokens <= 0:
+                    break
+
+                next_token = sample_token(logits, do_sample=do_sample, temperature=temperature, top_p=top_p)
+                tokens.append(next_token)
 
     assert first_logits is not None
     print_next_token_topk(tokenizer, first_logits, topk)
@@ -281,6 +303,7 @@ def main() -> int:
         temperature=args.temperature,
         top_p=args.top_p,
         topk=args.topk,
+        use_state_cache=not args.no_state_cache,
     )
 
     if args.max_new_tokens > 0:
