@@ -6,6 +6,9 @@
 
 </div>
 
+For SFT setup and complete commands, see [environment setup](documents/README.md)
+and the [data preparation and fine-tuning guide](documents/数据处理与微调.md).
+
 ## Project Introduction
 
 This project allows any researcher to start pre-training a fully aligned RWKV v7 model within 15 minutes. Of course, this does not include the time to download the data :)
@@ -61,6 +64,68 @@ sh ./demo-training-run.sh
 ```
 
 ## 13.3B Workflow
+
+### 2.9B SFT Workflow
+
+The repository includes a separate G1J 2.9B SFT entry point for
+`/mnt/data/Models/RWKV-7/rwkv7-g1j-2.9b-20260831-ctx16384.pth`. Its checkpoint
+shape is `L32-D2560-FFN10240`, with `head_size=64` and LoRA dimensions
+`96/96/64/320`. The 2.9B wrappers reuse the 13.3B SFT backend with separate
+model defaults.
+
+The wrapper validates the checkpoint shape before delegating to the tested SFT
+launcher:
+
+```bash
+CTX_LEN=192512 \
+DATA_FILE=/mnt/data/Datasets/SFT_RWKV7_13B_ctx192512/results/SFT_RWKV7_13B \
+PROJ_DIR=/mnt/data/Codes/RWKV/RWKV-LM-V7-12B-train/outs/3b-sft-ctx192512 \
+bash run_3b_sft_zero3_offload.sh
+```
+
+For the staged one-day PT plus SFT-finish run, use the dedicated launchers:
+
+```bash
+# PT: mask=1 data, 1000 optimizer steps (~24.4h), checkpoint every 500 steps (~12.2h)
+bash run_3b_sft_ctx192512_pt.sh
+
+# SFT: resumes rwkv-step-1000.pth and computes the remaining one-pass schedule
+bash run_3b_sft_ctx192512_sft-finish-onepass.sh
+```
+
+Both launchers use LR `4e-6 -> 4e-7`, 8-GPU
+ZeRO-3-offload settings, `micro_bsz=1`, and `accumulate_grad_batches=4`.
+The staged launchers enable the `RWKV7-3B-SFT` wandb project by default;
+set `WANDB_MODE=offline` for offline logging. Override paths or step counts
+with same-name environment variables when needed.
+
+On 8xH800 with ZeRO-3 offload, the measured stable profile reached
+`ctx_len=192512` for two optimizer steps, with a sampled peak around 80.4 GiB
+per GPU and no OOM or allocator-flush warning. `196608` completed one step but
+left too little headroom and triggered allocator pressure; use `192512` as the
+production starting point and re-profile after changing batch, DeepSpeed, or
+CUDA settings.
+
+Each SFT dataset must be regenerated with the same `--ctx-len`; the trainer
+expects every document to contain `ctx_len + 1` tokens. The current x070 CUDA
+path also requires `ctx_len` to be a positive multiple of 16. Use
+`run_3b_sft_profile.sh` for a short real-checkpoint profile and
+`scripts/profile_3b_context_sweep.sh` to test several prepared context
+datasets. The sweep records pass/fail and profile directories but does not
+guess a stable maximum when no GPU run is available.
+
+The checkpoint dimensions can be inspected without loading its 5.5 GB tensor
+payload into memory:
+
+```bash
+python scripts/check_rwkv_checkpoint.py \
+  /mnt/data/Models/RWKV-7/rwkv7-g1j-2.9b-20260831-ctx16384.pth \
+  --json
+```
+
+After a host reboot, source `scripts/setup_rwkv_cuda_env.sh` in the active
+CUDA-enabled conda environment before launching a legacy 13.3B script. The
+new 2.9B wrappers source it automatically.
 
 This repository also contains a practical 13.3B / DeepSpeed workflow for long-running training, clean shutdown, resume, checkpoint conversion, and inference.
 

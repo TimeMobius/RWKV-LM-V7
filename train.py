@@ -48,6 +48,33 @@ def is_deepspeed_checkpoint_dir(path: str) -> bool:
     )
 
 
+def find_stage2_checkpoint(proj_dir: str) -> tuple[str, int, int | None]:
+    """Return the newest epoch checkpoint and its optional fallback slot."""
+    slots = []
+    for name in os.listdir(proj_dir):
+        slot = parse_epoch_checkpoint_name(name)
+        if slot is None:
+            continue
+        path = os.path.join(proj_dir, name)
+        if os.path.isfile(path) or os.path.isdir(path):
+            slots.append(slot)
+
+    if not slots:
+        init_path = os.path.join(proj_dir, "rwkv-init.pth")
+        if os.path.isfile(init_path) or os.path.isdir(init_path):
+            return init_path, -1, None
+        raise FileNotFoundError(
+            f"train_stage>=2 found no epoch checkpoints in {proj_dir!r} "
+            "and no rwkv-init.pth fallback."
+        )
+
+    slots.sort()
+    max_slot = slots[-1]
+    load_name = "rwkv-init.pth" if max_slot == -1 else f"rwkv-{max_slot}.pth"
+    previous_slot = slots[-2] if len(slots) > 1 else None
+    return os.path.join(proj_dir, load_name), max_slot, previous_slot
+
+
 def resolve_resume_checkpoint_path(path: str, strategy: str):
     if not path:
         return None
@@ -424,24 +451,9 @@ if __name__ == "__main__":  # pragma: no cover
     configure_samples_per_epoch(args)
 
     if args.train_stage >= 2:  # find latest saved model
-        list_p = []
-        for p in os.listdir(args.proj_dir):
-            slot = parse_epoch_checkpoint_name(p)
-            if slot is None:
-                continue
-            full_path = os.path.join(args.proj_dir, p)
-            if os.path.isfile(full_path) or os.path.isdir(full_path):
-                list_p += [slot]
-        list_p.sort()
-        max_p = list_p[-1]
-        if len(list_p) > 1:
-            args.my_pile_prev_p = list_p[-2]  # in case max_p is corrupted
-        if max_p == -1:
-            args.load_model = f"{args.proj_dir}/rwkv-init.pth"
-        else:
-            args.load_model = f"{args.proj_dir}/rwkv-{max_p}.pth"
-            if args.warmup_steps < 0:
-                args.warmup_steps = 10
+        args.load_model, max_p, args.my_pile_prev_p = find_stage2_checkpoint(args.proj_dir)
+        if max_p >= 0 and args.warmup_steps < 0:
+            args.warmup_steps = 10
         if not is_deepspeed_checkpoint_dir(args.load_model):
             args.epoch_begin = max_p + 1
 
@@ -618,11 +630,24 @@ if __name__ == "__main__":  # pragma: no cover
         except:
             rank_zero_info(f"Bad checkpoint {args.load_model}")
             if args.train_stage >= 2:  # try again using another checkpoint
-                max_p = args.my_pile_prev_p
-                if max_p == -1:
-                    args.load_model = f"{args.proj_dir}/rwkv-init.pth"
+                previous_slot = getattr(args, "my_pile_prev_p", None)
+                if previous_slot is None:
+                    fallback_path = os.path.join(args.proj_dir, "rwkv-init.pth")
+                    if fallback_path == args.load_model or not (
+                        os.path.isfile(fallback_path) or os.path.isdir(fallback_path)
+                    ):
+                        raise RuntimeError(
+                            f"Could not load checkpoint {args.load_model!r}; "
+                            "no previous checkpoint or rwkv-init.pth fallback is available."
+                        )
+                    args.load_model = fallback_path
+                    max_p = -1
+                elif previous_slot == -1:
+                    args.load_model = os.path.join(args.proj_dir, "rwkv-init.pth")
+                    max_p = -1
                 else:
-                    args.load_model = f"{args.proj_dir}/rwkv-{max_p}.pth"
+                    args.load_model = os.path.join(args.proj_dir, f"rwkv-{previous_slot}.pth")
+                    max_p = previous_slot
                 if not is_deepspeed_checkpoint_dir(args.load_model):
                     args.epoch_begin = max_p + 1
                 args.resume_ckpt_path = resolve_resume_checkpoint_path(args.load_model, args.strategy)

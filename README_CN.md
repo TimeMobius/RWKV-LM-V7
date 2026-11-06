@@ -7,6 +7,9 @@
 
 </div>
 
+首次使用 SFT，请先阅读 [环境配置](documents/README.md) 和
+[数据处理与微调教程](documents/数据处理与微调.md)，其中包含完整命令与示例数据。
+
 ## 项目介绍
 让任何研究者在 15 分钟内开始预训练一个完全对齐的 RWKV v7 模型。当然不包括下载数据 :) 。
 
@@ -514,6 +517,64 @@ RWKV_SFT_FUSED_CE_TRAIN_PY_STEPS=2 \
 RWKV_SFT_FUSED_CE_TRAIN_PY_SUMMARY_FILE=/tmp/rwkv_sft_fused_ce_zero3.json \
 python -m pytest -q tests/test_sft_cuda_smoke.py::test_train_py_sft_deepspeed_masked_fused_ce_smoke
 ```
+
+## 2.9B SFT 启动脚本
+
+仓库新增了独立的 G1J 2.9B SFT 入口
+`run_3b_sft_zero3_offload.sh`，不会覆盖原有 13.3B 启动脚本。目标
+checkpoint `/mnt/data/Models/RWKV-7/rwkv7-g1j-2.9b-20260831-ctx16384.pth`
+的结构是：`n_layer=32`、`n_embd=2560`、`dim_ffn=10240`、`vocab_size=65536`、
+`head_size=64`、LoRA 维度 `96/96/64/320`。
+
+启动前 wrapper 会用 `scripts/check_rwkv_checkpoint.py` 检查 checkpoint shape，
+避免把 13.3B 的参数误传给 2.9B：
+
+```bash
+CTX_LEN=192512 \
+DATA_FILE=/mnt/data/Datasets/SFT_RWKV7_13B_ctx192512/results/SFT_RWKV7_13B \
+PROJ_DIR=/mnt/data/Codes/RWKV/RWKV-LM-V7-12B-train/outs/3b-sft-ctx192512 \
+bash run_3b_sft_zero3_offload.sh
+```
+
+如果按“PT 运行约一天，再用 SFT 补完一遍数据”的两阶段方式运行，使用下面两份专用脚本：
+
+```bash
+# PT：mask=1 数据，1000 个 optimizer step（约 24.4 小时），每 500 step 保存（约 12.2 小时）
+bash run_3b_sft_ctx192512_pt.sh
+
+# SFT：从 rwkv-step-1000.pth 恢复，并自动按 .idx 计算补完一遍数据的步数
+bash run_3b_sft_ctx192512_sft-finish-onepass.sh
+```
+
+两份脚本使用学习率 `4e-6 -> 4e-7`、8 卡 ZeRO-3 offload、
+`micro_bsz=1`、`accumulate_grad_batches=4`。两阶段专用脚本默认启用
+`RWKV7-3B-SFT` wandb 项目，需要离线记录时设置 `WANDB_MODE=offline`。
+需要调整路径或步数时，可用同名环境变量覆盖。
+
+在当前 8xH800、ZeRO-3 offload、`micro_bsz=1`、fused masked CE 配置下，实测
+`ctx_len=192512` 连续完成 2 个 optimizer step，采样峰值约 `80.4 GiB/GPU`，
+没有 OOM 或 allocator flush。`196608` 虽然完成 1 step，但余量过小并出现显存
+压力警告；因此生产起点建议使用 `192512`，修改 batch、DeepSpeed 或 CUDA 环境后
+需要重新 profile。
+
+每个上下文长度都必须单独预处理一份 SFT binidx + mask 数据，且 document 长度
+必须是 `ctx_len + 1`。当前 x070 CUDA kernel 要求 `ctx_len` 是 16 的倍数。
+`run_3b_sft_profile.sh` 用于真实 checkpoint 的短跑显存/吞吐测量；准备好多个
+上下文数据后，可用 `scripts/profile_3b_context_sweep.sh` 串行测试并把结果写到
+`summary.tsv`。脚本不会在没有 GPU 实跑时臆测“最大稳定上下文”。
+
+只读检查 5.5GB checkpoint 的结构（不会把权重完整加载进内存）：
+
+```bash
+python scripts/check_rwkv_checkpoint.py \
+  /mnt/data/Models/RWKV-7/rwkv7-g1j-2.9b-20260831-ctx16384.pth \
+  --json
+```
+
+服务器重启后，如果旧的 13.3B 脚本重新编译 CUDA extension，可以先在已激活的
+CUDA conda 环境执行 `source scripts/setup_rwkv_cuda_env.sh`，它会补齐 conda
+toolkit、`targets` 和 pip `nvidia/*` 的 header/lib 路径。新的 2.9B wrapper 会
+自动执行这个初始化。
 
 ## 13.3B SFT 启动脚本操作手册
 

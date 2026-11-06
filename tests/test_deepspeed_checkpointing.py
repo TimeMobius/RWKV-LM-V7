@@ -56,6 +56,32 @@ def test_parse_step_checkpoint_name_only_accepts_step_style_names():
     assert train.parse_step_checkpoint_name("not-a-checkpoint.pth") is None
 
 
+def test_find_stage2_checkpoint_uses_init_when_no_epoch_checkpoint_exists(tmp_path: Path):
+    init_path = tmp_path / "rwkv-init.pth"
+    init_path.write_bytes(b"checkpoint")
+
+    path, max_slot, previous_slot = train.find_stage2_checkpoint(str(tmp_path))
+
+    assert path == str(init_path)
+    assert max_slot == -1
+    assert previous_slot is None
+
+
+def test_find_stage2_checkpoint_reports_empty_output_without_init(tmp_path: Path):
+    with pytest.raises(FileNotFoundError, match="no rwkv-init.pth fallback"):
+        train.find_stage2_checkpoint(str(tmp_path))
+
+
+def test_find_stage2_checkpoint_has_no_invalid_previous_slot_for_single_checkpoint(tmp_path: Path):
+    checkpoint = _make_file_checkpoint(tmp_path, "rwkv-7.pth", 100)
+
+    path, max_slot, previous_slot = train.find_stage2_checkpoint(str(tmp_path))
+
+    assert path == str(checkpoint)
+    assert max_slot == 7
+    assert previous_slot is None
+
+
 def test_detects_deepspeed_checkpoint_directories(tmp_path: Path):
     ds_dir = _make_ds_checkpoint_dir(tmp_path, "rwkv-1.pth", 100)
     assert train.is_deepspeed_checkpoint_dir(str(ds_dir))

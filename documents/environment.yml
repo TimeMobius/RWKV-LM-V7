@@ -1,0 +1,16 @@
+# Create the compiler/Python layer, then install requirements.txt as in README.md.
+# No absolute prefix; usable on another Linux x86_64 host.
+name: rwkv-lm-v7
+channels:
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12.11
+  - pip=25.1.1
+  - setuptools=80.9.0
+  - wheel=0.45.1
+  - cuda-nvcc=12.8.93
+  - cuda-cudart-dev=12.8.90
+  - cuda-cccl_linux-64=12.8.90
+  - gcc_linux-64=13.4.0
+  - gxx_linux-64=13.4.0

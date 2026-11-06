@@ -13,4 +13,4 @@ outs/
 *.pyc
 .vscode/
 wandb/
-
+.codex_tmp/

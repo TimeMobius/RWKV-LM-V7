@@ -14,6 +14,10 @@ set -euo pipefail
 #
 #######################################################################################################################
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-}"
+source "$REPO_DIR/scripts/setup_rwkv_cuda_env.sh"
+
 MODEL_TYPE="${MODEL_TYPE:-x070}"
 
 N_LAYER="${N_LAYER:-61}"
@@ -203,9 +207,9 @@ TRAIN_ARGS=(
 )
 
 if [[ "$GPU_PER_NODE" -gt 1 && "$STRATEGY" == *deepspeed* ]]; then
-  CMD=(python -m torch.distributed.run --standalone --nproc_per_node "$GPU_PER_NODE" --master_port "$MASTER_PORT" train.py "${TRAIN_ARGS[@]}")
+  CMD=("$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node "$GPU_PER_NODE" --master_port "$MASTER_PORT" train.py "${TRAIN_ARGS[@]}")
 else
-  CMD=(python train.py "${TRAIN_ARGS[@]}")
+  CMD=("$PYTHON_BIN" train.py "${TRAIN_ARGS[@]}")
 fi
 
 if [[ "$PROFILE_MODE" == "nsys" ]]; then

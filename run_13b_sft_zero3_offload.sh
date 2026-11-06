@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-}"
+source "$REPO_DIR/scripts/setup_rwkv_cuda_env.sh"
+
 #######################################################################################################################
 #
 # RWKV7 G1F 13.3B SFT launcher for binidx + mask-sidecar data.
@@ -121,7 +125,7 @@ if [[ -n "${SFT_MASK_FILE:-}" ]]; then
   EXTRA_ARGS+=(--sft_mask_file "$SFT_MASK_FILE")
 fi
 
-python train.py --load_model "$LOAD_MODEL" --wandb "${WANDB_PROJECT:-}" --proj_dir "$PROJ_DIR" --my_testing "$MODEL_TYPE" \
+"$PYTHON_BIN" train.py --load_model "$LOAD_MODEL" --wandb "${WANDB_PROJECT:-}" --proj_dir "$PROJ_DIR" --my_testing "$MODEL_TYPE" \
  --ctx_len "$CTX_LEN" --train_stage 0 --epoch_steps "$EPOCH_STEPS" --epoch_count "$EPOCH_COUNT" --epoch_begin "${EPOCH_BEGIN:-0}" \
  --sft_one_pass "$SFT_ONE_PASS" \
  --sft_eval_tail_ratio "$SFT_EVAL_TAIL_RATIO" --sft_eval_tail_docs "$SFT_EVAL_TAIL_DOCS" --sft_eval_include_in_train "$SFT_EVAL_INCLUDE_IN_TRAIN" \
